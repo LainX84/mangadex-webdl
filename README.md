@@ -19,10 +19,10 @@ treats MangaDex's rate limits as a hard constraint.
 <p align="center">
   <img src="https://raw.githubusercontent.com/lainx84/mangadex-webdl/main/docs/screenshots/home.png" alt="MangaDex WebDL — dashboard" width="900">
 </p>
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/lainx84/mangadex-webdl/main/docs/screenshots/library.png" alt="Library" width="900">
-  &nbsp;
+</p>
+<p align="center">
   <img src="https://raw.githubusercontent.com/lainx84/mangadex-webdl/main/docs/screenshots/statistics.png" alt="Statistics" width="900">
 </p>
 
