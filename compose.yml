@@ -1,0 +1,191 @@
+# MangaDex WebDL — Docker Compose stack.
+#
+#   cp .env.example .env        # then edit it
+#   ./scripts/init-secrets.sh   # creates secrets/ (DB password + empty MangaDex account files)
+#   docker compose up -d
+#
+# Uses the published image (MDM_IMAGE). To build from source instead:
+#   docker compose -f compose.yml -f compose.build.yml up -d --build
+
+name: mangadex-webdl
+
+x-app: &app
+  image: ${MDM_IMAGE:-ghcr.io/lainx84/mangadex-webdl:latest}
+  user: "${PUID:-1000}:${PGID:-1000}"
+  init: true
+  restart: unless-stopped
+  env_file:
+    - .env
+  secrets:
+    - db_password
+    # MangaDex account (personal API client); empty files = account features off
+    - md_client_id
+    - md_client_secret
+    - md_username
+    - md_password
+  volumes:
+    # ONE dedicated folder holding the library and its working folders, e.g.
+    #   MangaDex-WebDL/MangaDex   (library, MDM_DOWNLOADS_ROOT=/mangadex/MangaDex)
+    #   MangaDex-WebDL/Incoming   (downloads in progress, MDM_STAGING_ROOT=/mangadex/Incoming)
+    #   MangaDex-WebDL/Replaced   (previous copies, MDM_REPLACED_ROOT=/mangadex/Replaced)
+    # One bind mount means a finished chapter moves into the library with an atomic rename.
+    # The folder must already exist (usually on a host NFS mount): Docker refuses to start
+    # instead of silently creating an empty local folder.
+    - type: bind
+      source: ${MDM_LIBRARY_PATH:?set MDM_LIBRARY_PATH in .env}
+      target: /mangadex
+      bind:
+        create_host_path: false
+        propagation: rslave
+    # Optional: existing CBZ collection, read-only, only used to suggest where to start.
+    # An empty folder simply turns the feature off.
+    - type: bind
+      source: ${MDM_ARCHIVE_PATH:-./archive}
+      target: /archive
+      read_only: true
+      bind:
+        create_host_path: true
+        propagation: rslave
+    - ${MDM_APPDATA_PATH:-./appdata}/data:/data
+  cap_drop:
+    - all
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - internal
+    - egress
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  migrate:
+    <<: *app
+    container_name: mangadex-webdl-migrate
+    command: ["mdm", "init-db"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    container_name: mangadex-webdl
+    mem_limit: 512m
+    memswap_limit: 512m
+    ports:
+      - "${MDM_BIND_ADDRESS:-0.0.0.0}:${MDM_PORT:-8098}:8000"
+    healthcheck:
+      test: ["CMD", "mdm", "health", "api"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    container_name: mangadex-webdl-worker
+    command: ["python", "-m", "app.worker"]
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "mdm", "health", "worker"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    <<: *app
+    container_name: mangadex-webdl-scheduler
+    command: ["python", "-m", "app.scheduler"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    healthcheck:
+      test: ["CMD", "mdm", "health", "scheduler"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:17
+    container_name: mangadex-webdl-db
+    mem_limit: 512m
+    memswap_limit: 512m
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MDM_DB_USER:-mangadex_webdl}
+      POSTGRES_DB: ${MDM_DB_NAME:-mangadex_webdl}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${MDM_APPDATA_PATH:-./appdata}/postgres:/var/lib/postgresql/data
+    secrets:
+      - db_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: mangadex-webdl-redis
+    mem_limit: 320m
+    memswap_limit: 320m
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "300", "1", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - ${MDM_APPDATA_PATH:-./appdata}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+networks:
+  # PostgreSQL and Redis publish no ports and have no internet access.
+  internal:
+    internal: true
+  egress: {}
+
+secrets:
+  db_password:
+    file: ${MDM_SECRETS_PATH:-./secrets}/db_password
+  md_client_id:
+    file: ${MDM_SECRETS_PATH:-./secrets}/md_client_id
+  md_client_secret:
+    file: ${MDM_SECRETS_PATH:-./secrets}/md_client_secret
+  md_username:
+    file: ${MDM_SECRETS_PATH:-./secrets}/md_username
+  md_password:
+    file: ${MDM_SECRETS_PATH:-./secrets}/md_password

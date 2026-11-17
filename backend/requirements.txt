@@ -1,0 +1,15 @@
+# Runtime dependencies (pinned). Upgrade deliberately and re-run the test suite.
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+sqlalchemy==2.1.5
+alembic==1.20.0
+psycopg[binary]==3.3.6
+redis==8.1.0
+rq==2.12.0
+httpx==0.28.1
+pydantic==2.14.1
+pydantic-settings==2.16.0
+argon2-cffi==25.1.0
+pillow==13.0.0
+structlog==26.1.0
+click==8.5.0

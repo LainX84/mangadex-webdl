@@ -1,0 +1,5 @@
+# Keep LF line endings in the repository (shell scripts and Dockerfile must stay LF on Linux)
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary

@@ -1,0 +1,9 @@
+{
+  "name": "MangaDex WebDL",
+  "short_name": "WebDL",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#c8361f",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
