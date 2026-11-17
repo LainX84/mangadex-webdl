@@ -74,12 +74,9 @@ jobs:
         with:
           images: ${{ steps.names.outputs.images }}
           tags: |
-            type=edge,branch=main
+            type=branch=main
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=ref,event=pr
-            type=sha,format=short,enable=${{ github.event_name != 'pull_request' }}
           labels: |
             org.opencontainers.image.title=MangaDex WebDL
             org.opencontainers.image.description=Self-hosted MangaDex download manager (FastAPI + React, Docker)
