@@ -114,12 +114,28 @@ export interface Release extends ReleaseBrief {
   unavailable: boolean;
   local_status: "missing" | "downloaded" | "imported" | "modified" | "missing_on_disk" | "skipped" | "external" | "replaced" | "in_replaced";
   folder: string | null;
+  /** Path of the volume CBZ this chapter was packed into (its folder was deleted). */
+  in_volume_cbz?: string | null;
   local_page_count: number | null;
   downloaded_at: string | null;
   wanted: boolean;
   sort: number | null;
   job: Job | null;
   mangadex_url: string;
+}
+
+export interface VolumeInfo {
+  language: string;
+  volume: string;
+  status: "built" | "ready" | "ready_with_warnings" | "open" | "incomplete";
+  closed: boolean;
+  buildable: boolean;
+  problems: string[];
+  warnings: string[];
+  chapters: { release_id: string; chapter: string | null; title: string | null; groups: string[]; folder: string | null; edited: boolean }[];
+  kept_duplicates: string[];
+  destination: string | null;
+  archive: { path: string; chapters: number; pages: number; size_bytes: number; automatic: boolean; created_at: string | null } | null;
 }
 
 export interface Language {

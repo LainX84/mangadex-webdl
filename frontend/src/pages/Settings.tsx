@@ -87,6 +87,64 @@ const SECTIONS: { title: string; note?: string; fields: FieldDef[] }[] = [
   },
 ];
 
+const WEBP_READERS = "WebP needs a reader that supports it — Komga, Kavita, Mihon/Tachiyomi, Panels and current desktop readers do; some older ones (e.g. classic ComicRack) do not.";
+
+/** What each page format does (sizes measured on a real library of JPEG and PNG pages). */
+export const PAGE_FORMAT_INFO: Record<string, { tone: "info" | "warn"; text: string }> = {
+  original: { tone: "info", text: "Pages are saved exactly as MangaDex serves them: no conversion, no quality change, fastest downloads." },
+  mixed: { tone: "info", text: `Saves space without losing a single pixel: JPEG and WebP pages are kept as they are; PNG, GIF and BMP pages become the smallest of the original, an optimised PNG and a lossless WebP (WebP only when it saves at least 5 %). About −9 % on PNG pages, JPEG pages unchanged. Every conversion is checked pixel for pixel. A chapter can mix formats. ${WEBP_READERS}` },
+  png: { tone: "warn", text: "Every page becomes PNG, pixel for pixel — read by every CBZ reader. A JPEG page gets much bigger (about +150 %, its compression artefacts are kept exactly); PNG pages are only re-optimised. Animated GIFs stay GIF." },
+  jpg: { tone: "warn", text: "Every page becomes JPEG — read by every CBZ reader. Pages that are already JPEG are kept untouched; PNG and WebP pages are compressed once at the chosen quality (about −39 % for PNG at 92), transparent areas become white. Pages taller than 65 500 px stay PNG; animated GIFs stay GIF." },
+  webp_lossy: { tone: "warn", text: `Every page becomes WebP with a small, permanent quality loss (about −32 % for JPEG and −50 % for PNG at quality 90). Pages that are already WebP are kept. Pages wider or taller than 16 383 px (WebP limit) become JPEG; animated GIFs stay GIF. ${WEBP_READERS}` },
+  webp_lossless: { tone: "warn", text: `Every page becomes WebP, pixel for pixel. JPEG pages get bigger (about +50 %), PNG pages smaller (about −12 %); conversion takes 2–3 s per page. Pages that are already WebP are kept. Pages wider or taller than 16 383 px become PNG; animated GIFs stay GIF. ${WEBP_READERS}` },
+};
+
+type Form = AppSettings;
+
+/** Page format (original / WebP), chapter CBZ and automatic volume CBZ. */
+export function OutputFormat({ form, setForm }: { form: Form; setForm: (f: Form) => void }) {
+  const fmt = ((form.page_format as string) === "webp_lossless_png" ? "mixed" : (form.page_format as string)) || "original";
+  const info = PAGE_FORMAT_INFO[fmt] ?? PAGE_FORMAT_INFO.original;
+  return (
+    <>
+      <h2 className="section-title">Output format</h2>
+      <div className="card">
+        <div className="field">
+          <label htmlFor="page_format">Page images</label>
+          <select id="page_format" className="input" value={fmt} onChange={(e) => setForm({ ...form, page_format: e.target.value })}>
+            <option value="original">Original — kept exactly as uploaded (default)</option>
+            <option value="mixed">MIXED — save space, never lose quality</option>
+            <option value="png">PNG — every page, lossless</option>
+            <option value="jpg">JPEG — every page</option>
+            <option value="webp_lossy">WebP lossy — every page</option>
+            <option value="webp_lossless">WebP lossless — every page</option>
+          </select>
+          <span className="hint">Applies to chapters downloaded from now on; chapters already in the library are not converted. Pages can arrive as JPEG, PNG, WebP or GIF, whatever the uploader used.</span>
+        </div>
+        <div className={`alert ${info.tone} small`} role={info.tone === "warn" ? "alert" : undefined}><div className="body">{info.text}</div></div>
+        {fmt === "jpg" && (
+          <div className="field">
+            <label htmlFor="jpeg_quality">JPEG quality <span className="muted">(75–100)</span></label>
+            <input id="jpeg_quality" className="input" type="number" min={75} max={100} value={(form.jpeg_quality as number) ?? 92}
+              onChange={(e) => setForm({ ...form, jpeg_quality: Number(e.target.value) })} />
+            <span className="hint">Default 92 (with full colour resolution from 90 up). Pages that are already JPEG are never compressed again.</span>
+          </div>
+        )}
+        {fmt === "webp_lossy" && (
+          <div className="field">
+            <label htmlFor="webp_quality">WebP quality <span className="muted">(75–100)</span></label>
+            <input id="webp_quality" className="input" type="number" min={75} max={100} value={(form.webp_quality as number) ?? 90}
+              onChange={(e) => setForm({ ...form, webp_quality: Number(e.target.value) })} />
+            <span className="hint">Default 90. Higher = closer to the original and bigger files; fine screentones suffer first below 85.</span>
+          </div>
+        )}
+        <Switch label="One CBZ file per chapter" hint="New chapters arrive as “Volume 03 Chapter 12 - Title.cbz” (pages, ComicInfo.xml and the app's marker inside) instead of a folder of images. Renames, revisions and library checks work the same. Existing folders stay folders." checked={form.chapter_cbz === true} onChange={(v) => setForm({ ...form, chapter_cbz: v })} />
+        <Switch label="Build volume CBZ files automatically" hint="When every chapter of a volume is in the library, MangaDex already lists a later volume (or the title is completed) and the chapter numbers have no gaps, the volume is packed into “Volume 03.cbz” in the manga folder, checked page by page, and only then are the chapter folders deleted. Volumes can also be packed by hand from the manga page." checked={form.volume_cbz_auto === true} onChange={(v) => setForm({ ...form, volume_cbz_auto: v })} />
+      </div>
+    </>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <>
@@ -593,6 +651,7 @@ function AppSettingsForm() {
         </div>
         <Switch label="Rename when MangaDex assigns the volume" hint="After each scan, chapter folders still in the library move from “Volume TBD …” to “Volume 07 …”. Folders you already moved away are not affected." checked={form.rename_on_volume_change !== false} onChange={(v) => setForm({ ...form, rename_on_volume_change: v })} />
       </div>
+      <OutputFormat form={form} setForm={setForm} />
       <h2 className="section-title">MangaDex account sync</h2>
       <div className="card">
         <Switch label="Use the MangaDex account" hint="Fast checks through the followed feed and the followed list. Needs the md_* secrets." checked={form.mangadex_account_enabled !== false} onChange={(v) => setForm({ ...form, mangadex_account_enabled: v })} />

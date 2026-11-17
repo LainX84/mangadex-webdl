@@ -1,7 +1,8 @@
 # MangaDex WebDL
 
 A self-hosted download manager for [MangaDex](https://mangadex.org): it follows the manga you choose, notices new
-chapters and saves them to your NAS as plain page images, ready to be tidied up or packed into CBZ files.
+chapters and saves them to your NAS as page images — as uploaded, or converted to PNG, JPEG or WebP — or as CBZ
+files, one per chapter or one per complete volume.
 FastAPI + React, PostgreSQL, Redis, one image for the web app, worker and scheduler.
 
 **Full documentation, source code and issues: <https://github.com/lainx84/mangadex-webdl>**
@@ -25,6 +26,8 @@ FastAPI + React, PostgreSQL, Redis, one image for the web app, worker and schedu
 - Manual edits (removed ad pages, moved chapters) are detected and never undone.
 - NAS safety: nothing is written unless the share is mounted (sentinel file, filesystem type, write probe).
 - Polite by default: shared rate limiter well below MangaDex's limits, pause on 429, full stop on 403.
+- Optional output formats: every page as PNG, JPEG or WebP (or a lossless space-saving MIXED mode), one CBZ per
+  chapter, one CBZ per complete volume (checked page by page before the chapter folders are deleted).
 - Optional read-only CBZ archive: suggests the chapter to continue from.
 - Statistics, Approvals, Review, mobile-first UI, mandatory login (Argon2id, CSRF, secure sessions).
 
@@ -32,8 +35,8 @@ FastAPI + React, PostgreSQL, Redis, one image for the web app, worker and schedu
 
 | Tag | Content |
 |---|---|
-| `latest`, `1`, `1.x`, `1.x.y` | Releases |
-| `edge` | Latest commit on `main` |
+| `latest` | Newest release |
+| `1.x.y` (e.g. `1.1.0`) | That exact release |
 
 Platforms: `linux/amd64`, `linux/arm64`. Also published as `ghcr.io/lainx84/mangadex-webdl`.
 

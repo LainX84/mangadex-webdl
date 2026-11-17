@@ -1,7 +1,9 @@
 # MangaDex WebDL
 
 A self-hosted download manager for [MangaDex](https://mangadex.org). It follows manga, monitors them for new
-chapters, and downloads each chapter as **individual page images** (no CBZ/ZIP/PDF) into a NAS-backed library:
+chapters, and downloads each chapter as **individual page images** into a NAS-backed library (optionally converted to
+PNG, JPEG or WebP,
+one CBZ per chapter, or packed into one CBZ per complete volume — see [Output formats](#output-formats-page-format-chapter-cbz-volume-cbz)):
 
 ```
 {library}/{Manga Title}/[{Language}/]{Chapter Folder}/001.jpg
@@ -51,19 +53,20 @@ treats MangaDex's rate limits as a hard constraint.
 13. [Folder layout](#folder-layout)
 14. [Staging and replaced folders](#staging-and-replaced-folders)
 15. [Chapter folder names (ready for volumes)](#chapter-folder-names-ready-for-volumes)
-16. [Per-volume chapter numbering (anthologies)](#per-volume-chapter-numbering-anthologies)
-17. [Late chapters, re-uploads and new versions](#late-chapters-re-uploads-and-new-versions)
-18. [Rate limiting: speed vs. politeness](#rate-limiting-speed-vs-politeness)
-19. [How downloads, recovery and imports work](#how-downloads-recovery-and-imports-work)
-20. [Security model](#security-model)
-21. [Backup, restore, upgrade](#backup-restore-upgrade)
-22. [Administration (CLI)](#administration-cli)
-23. [Development and tests](#development-and-tests)
-24. [Building and publishing the image](#building-and-publishing-the-image)
-25. [Known limitations](#known-limitations)
-26. [Acknowledgements](#acknowledgements)
-27. [Disclaimer and legal notice](#disclaimer-and-legal-notice)
-28. [License](#license)
+16. [Output formats: page format, chapter CBZ, volume CBZ](#output-formats-page-format-chapter-cbz-volume-cbz)
+17. [Per-volume chapter numbering (anthologies)](#per-volume-chapter-numbering-anthologies)
+18. [Late chapters, re-uploads and new versions](#late-chapters-re-uploads-and-new-versions)
+19. [Rate limiting: speed vs. politeness](#rate-limiting-speed-vs-politeness)
+20. [How downloads, recovery and imports work](#how-downloads-recovery-and-imports-work)
+21. [Security model](#security-model)
+22. [Backup, restore, upgrade](#backup-restore-upgrade)
+23. [Administration (CLI)](#administration-cli)
+24. [Development and tests](#development-and-tests)
+25. [Building and publishing the image](#building-and-publishing-the-image)
+26. [Known limitations](#known-limitations)
+27. [Acknowledgements](#acknowledgements)
+28. [Disclaimer and legal notice](#disclaimer-and-legal-notice)
+29. [License](#license)
 
 ---
 
@@ -77,6 +80,11 @@ treats MangaDex's rate limits as a hard constraint.
   one, then renamed automatically) and ends with the scanlation group when needed, so chapters of several groups —
   and the same chapter from two groups — sit side by side in reading order.
   See [Chapter folder names](#chapter-folder-names-ready-for-volumes).
+- **Optional output formats** (all off by default): every page converted to **PNG, JPEG, WebP lossy or WebP
+  lossless**, or a **MIXED** mode that saves space without losing a pixel; **one CBZ per chapter**; and **one CBZ per
+  complete volume** (`Volume 03.cbz`, by button or automatically) — checked page by page before the chapter folders
+  are deleted.
+  See [Output formats](#output-formats-page-format-chapter-cbz-volume-cbz).
 - **Only complete chapters in the library**: pages are downloaded into a separate staging folder and the chapter
   appears in the library in one atomic move when it is complete; replaced copies (redownloads, and revisions of
   chapters with manual edits) are moved out of the library too, while a group's revision of an untouched chapter
@@ -148,7 +156,7 @@ One image is used for `app`, `worker`, `scheduler` and `migrate` (different comm
 truth for every job; Redis only wakes workers up, and if Redis loses its data the scheduler re-dispatches from the
 database.
 
-Stack: Python 3.12, FastAPI, SQLAlchemy 2, Alembic, RQ, httpx, Pillow (validation only, never re-encoding),
+Stack: Python 3.12, FastAPI, SQLAlchemy 2, Alembic, RQ, httpx, Pillow (validation; re-encoding only when a page format other than *Original* is chosen),
 React 19 + TypeScript + Vite, TanStack Query.
 
 ## Requirements
@@ -234,7 +242,7 @@ Everything is in `.env` (see `.env.example` for all settings and comments):
 
 | Variable | Meaning |
 |---|---|
-| `MDM_IMAGE` | Image to run (`ghcr.io/…` or Docker Hub; pin a version such as `:1.0.0` if you prefer) |
+| `MDM_IMAGE` | Image to run (`ghcr.io/…` or Docker Hub; pin a version such as `:1.1.0` if you prefer) |
 | `MDM_LIBRARY_PATH` | Host folder bind-mounted at `/mangadex` (a dedicated NAS folder holding only the library and its working folders) |
 | `MDM_DOWNLOADS_ROOT` | Library path inside the container (default in the example: `/mangadex/MangaDex`) |
 | `MDM_STAGING_ROOT` | Downloads in progress (`/mangadex/Incoming`); empty = `{library}/.mdm-staging` |
@@ -339,7 +347,7 @@ add_header X-Robots-Tag "noindex, nofollow" always;
 - **Settings**: rates, concurrency, retries, naming padding, chapter folders (group in the name, volume
   placeholder, rename on volume change), content ratings, language folder codes (`ENG`, `ITA`, `JPN`, `SPA`, … —
   editable), MangaDex account status and sync options, comics archive, system status (library, downloads in
-  progress, replaced copies), password.
+  progress, replaced copies), output format (page format, chapter CBZ, automatic volume CBZ), password.
 
 ## Statistics
 
@@ -524,6 +532,78 @@ Volume TBD Chapter 14                                     ← no volume on Manga
   rules; `--apply` does it, `--keep-groups` leaves `{Group}` levels in place.
 - Chapter digits: with padding 2, a volume holding chapters above 99 sorts wrong alphabetically; set *Chapter
   digits* to 3 for such series.
+
+## Output formats: page format, chapter CBZ, volume CBZ
+
+*Settings → Output format*. Everything is **off by default**: pages are saved exactly as uploaded, one folder per
+chapter. The options only apply to chapters downloaded from then on (existing chapters are never converted).
+
+**Page images** (`page_format`, `jpeg_quality`, `webp_quality`). MangaDex serves whatever the uploader used — JPEG,
+PNG, WebP, sometimes GIF — so a chapter can mix formats. Every mode except *Original* converts **every page** to its
+format, so a chapter ends up in one format; sizes below were measured on a real library of JPEG and PNG pages.
+
+| Mode | What happens | JPEG pages | PNG pages |
+|---|---|---|---|
+| `original` (default) | Pages exactly as uploaded | = | = |
+| `mixed` | Saves space **without losing a pixel**: JPEG and WebP pages are kept; PNG, GIF and BMP pages become the smallest of the original, an optimised PNG and a lossless WebP (WebP only if it saves ≥ 5 %). A chapter can mix formats | = | −9 % |
+| `png` | Every page PNG, pixel for pixel | +150 % | ≈ (re-optimised) |
+| `jpg` | Every page JPEG at `jpeg_quality` (75–100, default 92, full colour resolution from 90). JPEG pages are never compressed again; transparency becomes white | = | −39 % |
+| `webp_lossy` | Every page WebP at `webp_quality` (75–100, default 90). WebP pages are kept | −32 % | −50 % |
+| `webp_lossless` | Every page WebP, pixel for pixel. WebP pages are kept (they may be lossy inside) | +50 % | −12 % |
+
+- Lossless conversions are **verified pixel for pixel** after encoding; RGB pages that are really grayscale are
+  stored as grayscale (identical pixels, smaller files). Any decoding or encoding problem keeps the original page, so
+  a conversion never fails a download. Converting costs about 1–3 s per page (JPEG output: a few hundredths).
+- Format limits: pages wider or taller than 16 383 px cannot be WebP and become PNG (lossless modes) or JPEG
+  (lossy); beyond 65 500 px JPEG is impossible and PNG is used. Animated GIFs stay GIF.
+- **Reader compatibility**: JPEG and PNG open everywhere. WebP needs a reader that supports it — Komga, Kavita,
+  Mihon/Tachiyomi, Panels and current desktop readers do; some older ones (e.g. classic ComicRack) do not. Use `png`
+  or `jpg` for those.
+- **Revisions still work without comparing images**: version checks compare the MangaDex page file names (they
+  carry the SHA-256 of the uploaded file), kept in the marker and the database; the untouched-copy check uses the size
+  and SHA-256 of the converted file on disk.
+
+**One CBZ per chapter** (`chapter_cbz`). A finished chapter is packed in the staging folder as
+`Volume 03 Chapter 12 - Title.cbz` (stored, not deflated) with the pages at its root, the `.mdm-release.json` marker
+and a `ComicInfo.xml` (series, number, volume, title, group, language, date, link), then moved into the library like
+a folder. Everything works on folders and CBZ files alike — library scans and re-linking by marker, *Edited locally*,
+revisions (untouched-copy check inside the archive), layout moves and renames when MangaDex assigns the volume (the
+marker inside the CBZ is updated) — and both can be mixed in one title. A revision keeps the kind (folder or CBZ) of
+the copy it replaces. Library scans only link `.cbz` files that contain a release marker; any other CBZ (volumes,
+your own files) is ignored and never sent to Review.
+
+**One CBZ per volume** (`volume_cbz_auto`, button on the manga page). `{Manga}/[{Language}/]Volume 03.cbz` (padded
+like the chapter folders), with one folder per chapter inside (`Volume 03 Chapter 12 - Title/001.jpg`) and a
+`ComicInfo.xml`. For each language, a numbered volume is:
+
+| Status | Meaning |
+|---|---|
+| *ready* | **closed** (MangaDex lists a later volume in that language, or the title is completed and this is its last volume), **every** chapter MangaDex lists in it is in the library (downloaded, imported or edited locally) and the numbering has **no gap** (inside the volume and from the end of the previous one) |
+| *ready with warnings* | as above, but with a gap, a chapter without volume numbered inside this one, or the same chapter from two groups (one copy goes in, the other stays) |
+| *open* | complete, but no later volume yet: it may still grow |
+| *incomplete* | a chapter is not downloaded, queued, moved out of the library, owned elsewhere or skipped |
+| *built* | already packed |
+
+Under each volume of the chapter list, *📦 Pack volume CBZ* asks for confirmation (destination, deletion, warnings)
+or shows why the volume is not complete. With *Build volume CBZ files automatically* on, only *ready* volumes are
+packed: after every finished download and once an hour (one pass over the whole library takes seconds).
+
+How a volume is built, and when the originals are deleted:
+
+1. The archive is written in the staging folder; ZIP structure and CRCs are tested.
+2. **First check**: every member is re-read and compared (size and SHA-256) with the page it came from, the member
+   list must be exactly the pages plus `ComicInfo.xml`, and every page must decode completely as an image.
+3. The archive is moved into the manga folder (never over an existing file) and the **same check runs again** on the
+   final file. Any failure deletes the new archive and leaves every chapter untouched.
+4. The volume is recorded in the database (`volume_archives`, migration `0011`).
+5. Each packed chapter is **deleted** only if it is still exactly what was packed (pages re-hashed) and holds nothing
+   else: a chapter folder with other files in it, or changed in the meantime, is kept and reported in the history.
+   Deleted chapters become *Folder deleted* (shown as *In volume CBZ*), like chapters moved out by hand: never
+   downloaded again; revisions follow `revision_after_move_days`.
+
+Ad or recruitment pages not removed by hand end up inside the volume. Runs on the `default` queue under the
+per-manga folder lock, never while a chapter of the title is downloading. API: `GET /api/manga/{id}/volumes`,
+`POST /api/manga/{id}/volumes/build` with `{language, volume, confirm: true, allow_warnings, allow_open}`.
 
 ## Per-volume chapter numbering (anthologies)
 
@@ -711,8 +791,9 @@ cd frontend && npm ci && npm test && npm run build
 - `test_api_auth.py`: wrong passwords, **every `/api` route answering 401 without a session** (walked from the
   OpenAPI schema), CSRF and cross-origin rejection.
 
-Suites: **backend 103 tests** (`test_api_auth`, `test_archive`, `test_group_exclusions`, `test_highlighted_tags`,
-`test_late_releases`, `test_library_safety`, `test_numbering`, `test_rename`, `test_revisions`, `test_tiers`),
+Suites: **backend 132 tests** (`test_api_auth`, `test_archive`, `test_group_exclusions`, `test_highlighted_tags`,
+`test_late_releases`, `test_library_safety`, `test_numbering`, `test_output_formats`, `test_rename`, `test_revisions`,
+`test_tiers`),
 **frontend** Vitest suites in `frontend/src/test`.
 
 ## Building and publishing the image
@@ -727,14 +808,14 @@ Suites: **backend 103 tests** (`test_api_auth`, `test_archive`, `test_group_excl
 
 | Event | Tags |
 |---|---|
-| push to `main` | `edge`, `sha-<short>` |
-| tag `v1.2.3` | `1.2.3`, `1.2`, `1`, `latest`, `sha-<short>` (and the Docker Hub description is updated from `docs/DOCKERHUB.md`, since Docker Hub accepts at most 25,000 characters) |
+| push to `main` | built only (checks the image builds), nothing pushed |
+| tag `v1.2.3` | `1.2.3` and `latest` (and the Docker Hub description is updated from `docs/DOCKERHUB.md`, since Docker Hub accepts at most 25,000 characters) |
 | pull request | built, not pushed |
 
 Release:
 
 ```sh
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 ## Known limitations
@@ -751,6 +832,9 @@ git tag v1.0.0 && git push origin v1.0.0
   *data saver* on or off makes the next version check re-download the chapter.
 - Revisions: an untouched copy is recognised by size and SHA-256 of its pages; renaming a page file without changing
   it also counts as an edit (the copy is kept).
+- Output formats: only new downloads are converted or packed. Data sizes in the statistics are those of the files
+  on disk (after conversion). Volumes are built from what is in the library: a chapter MangaDex never tagged
+  with the volume, or never uploaded, can only be flagged as a gap, not detected as missing.
 - Chapters hosted externally (e.g. MangaPlus links) are listed as *External* and cannot be downloaded.
 - MangaDex's feed endpoint is capped at 10 000 results per query; titles with more releases in the selected
   languages are only partially listed.

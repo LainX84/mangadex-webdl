@@ -25,7 +25,9 @@ folder lock and never while another chapter of the same manga is being written.
 and applies it to existing titles.
 
 Only folders linked to a release are moved; unknown folders are left where they
-are. Nothing is ever deleted except directories that became empty.
+are. Nothing is ever deleted except directories that became empty. A chapter stored
+as ``{Chapter}.cbz`` (``app.library.entries``) is moved and renamed like a folder; its
+name is parsed and rebuilt without the ``.cbz`` extension, which it always keeps.
 
 With *group in chapter name* on (``AppSettings.group_in_chapter_name``, the
 default) the group level is never needed: chapters of several groups sit side by
@@ -56,9 +58,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.enums import ACTIVE_JOB_STATUSES, JobStatus, LocalStatus
+from app.library.entries import entry_exists, split_name
 from app.library.marker import (
     PARTIAL_PREFIX,
-    RELEASE_MARKER,
     is_legacy_partial,
     read_release_marker,
     write_release_marker,
@@ -137,7 +139,7 @@ def release_base_parts(session: Session, manga: Manga, release: ChapterRelease, 
 
 def _on_disk(root: Path, rel: str | None) -> bool:
     try:
-        return bool(rel) and resolve_rel(root, rel).is_dir()
+        return bool(rel) and entry_exists(resolve_rel(root, rel))
     except Exception:
         return False
 
@@ -214,19 +216,21 @@ def _plan(session: Session, root: Path, manga: Manga, target: Layout,
         old = r.folder_rel_path
         base = release_base_parts(session, manga, r, target, folders)
         leaf = old.rsplit("/", 1)[-1]
+        stem, ext = split_name(leaf)  # ".cbz" for a chapter stored as a CBZ file
         if leaf_for is not None and _on_disk(root, old):
             wanted = leaf_for(r)
             # A folder already carrying its collision suffix keeps it when that is the wanted name.
-            if wanted and wanted != leaf and with_collision_suffix(wanted, str(r.id)) != leaf:
-                leaf = wanted
+            if wanted and wanted != stem and with_collision_suffix(wanted, str(r.id)) != stem:
+                stem = wanted
+        leaf = stem + ext
         new = "/".join([*base, leaf])
         if new == old:
             taken.add(new)
             continue
-        if not resolve_rel(root, old).is_dir():
+        if not _on_disk(root, old):
             continue  # deleted by the user: the record keeps pointing at its old place
         candidates = [new]
-        suffixed = with_collision_suffix(leaf, str(r.id))
+        suffixed = with_collision_suffix(stem, str(r.id)) + ext
         if suffixed != leaf:
             candidates.append("/".join([*base, suffixed]))
         for cand in candidates:
@@ -428,8 +432,6 @@ def recompute_layout(session: Session, root: Path, manga_id: uuid.UUID, *, dry_r
 def _refresh_marker(folder: Path, release: ChapterRelease) -> None:
     """Keep the volume / title / group in ``.mdm-release.json`` in step with MangaDex."""
     try:
-        if not (folder / RELEASE_MARKER).is_file():
-            return
         data = read_release_marker(folder)
         if not data or data.get("chapter_id") != str(release.id):
             return
@@ -458,7 +460,7 @@ def volume_out_of_date(release: ChapterRelease, placeholder: str | None) -> bool
     """
     if not release.folder_rel_path:
         return False
-    parsed = parse_chapter_folder(release.folder_rel_path.rsplit("/", 1)[-1], placeholder)
+    parsed = parse_chapter_folder(split_name(release.folder_rel_path.rsplit("/", 1)[-1])[0], placeholder)
     if parsed is None:
         return False
     return _norm_volume(parsed.volume) != _norm_volume(release.volume)
@@ -489,7 +491,7 @@ def rename_chapter_folders(session: Session, root: Path, manga_id: uuid.UUID, *,
             if not volume_out_of_date(r, settings.volume_placeholder):
                 return None
             # A volume rename never drops a group suffix the folder already has.
-            leaf = r.folder_rel_path.rsplit("/", 1)[-1]
+            leaf = split_name(r.folder_rel_path.rsplit("/", 1)[-1])[0]
             return desired_chapter_folder_name(
                 r, settings, r.id in suffixed or name_ends_with_group(leaf, r.group_names))
         return desired_chapter_folder_name(r, settings, r.id in suffixed)
@@ -596,7 +598,7 @@ def ensure_group_suffixes(session: Session, root: Path, release_id: uuid.UUID, j
     def leaf_for(r: ChapterRelease) -> str | None:
         if r.id not in suffixed or r.id == release.id:
             return None
-        if name_ends_with_group(r.folder_rel_path.rsplit("/", 1)[-1], r.group_names):
+        if name_ends_with_group(split_name(r.folder_rel_path.rsplit("/", 1)[-1])[0], r.group_names):
             return None
         return desired_chapter_folder_name(r, settings, True)
 

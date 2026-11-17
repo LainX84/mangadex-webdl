@@ -7,7 +7,7 @@ import { LOCAL_STATUS, absTime, chapterLabel, plainDescription, relTime } from "
 import { CUSTOM_TITLE, GroupPicker, LanguagePicker, TitlePicker, type GroupChoice } from "../pickers";
 import { ArchiveHint } from "../archive";
 import { TagList } from "../tags";
-import type { GroupStat, MangaDetail, MangaTitles, Release, RenameReport, ScanRun } from "../types";
+import type { GroupStat, MangaDetail, MangaTitles, Release, RenameReport, ScanRun, VolumeInfo } from "../types";
 
 type Tab = "chapters" | "settings" | "history";
 
@@ -296,6 +296,11 @@ function Chapters({ mangaId }: { mangaId: string }) {
       (from.sort !== null && r.sort !== null && r.sort >= from.sort))).map((r) => r.id)));
   const order = useChapterOrder();
   const volumes = useMemo(() => groupByVolume(items, order.value), [items, order.value]);
+  const volumeInfo = useQuery({
+    queryKey: ["volumes", mangaId],
+    queryFn: () => api<{ available: boolean; auto?: boolean; items: VolumeInfo[] }>(`/api/manga/${mangaId}/volumes`),
+    refetchInterval: 30000,
+  });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const selectableCount = items.filter(selectable).length;
 
@@ -345,6 +350,7 @@ function Chapters({ mangaId }: { mangaId: string }) {
               <span className="vol-range">{v.range}</span>
               <span className="vol-count">{v.items.length} <span aria-hidden="true">{isClosed ? "▾" : "▴"}</span></span>
             </button>
+            <VolumeCbzBar mangaId={mangaId} infos={volumeInfoFor(volumeInfo.data?.items, v.key)} />
             {!isClosed && (
               <div className="ch-list">
                 {v.items.map((r) => (
@@ -358,6 +364,80 @@ function Chapters({ mangaId }: { mangaId: string }) {
         );
       })}
     </>
+  );
+}
+
+/** The volume CBZ entries (one per language) for a volume group of the chapter list. */
+export function volumeInfoFor(items: VolumeInfo[] | undefined, key: string): VolumeInfo[] {
+  if (!items || key === "none") return [];
+  const n = Number(key.slice(2));
+  return items.filter((i) => Number(i.volume) === n && !Number.isNaN(n));
+}
+
+export function VolumeCbzBar({ mangaId, infos }: { mangaId: string; infos: VolumeInfo[] }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const build = useMutation({
+    mutationFn: (v: VolumeInfo) => post<{ queued: boolean }>(`/api/manga/${mangaId}/volumes/build`, {
+      language: v.language, volume: v.volume, confirm: true,
+      allow_warnings: v.warnings.length > 0, allow_open: v.status === "open",
+    }),
+    onSuccess: (r) => {
+      toast(r.queued ? "Volume CBZ queued — the chapter list updates when it is done" : "This volume is already being packed");
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["volumes", mangaId] });
+        qc.invalidateQueries({ queryKey: ["chapters", mangaId] });
+      }, 4000);
+    },
+    onError: (e: Error) => toast(e.message, "bad"),
+  });
+  const shown = infos.filter((i) => i.status === "built" || i.chapters.length > 0);
+  if (shown.length === 0) return null;
+  return (
+    <div className="vol-cbz">
+      {shown.map((v) => {
+        const lang = shown.length > 1 || infos.length > 1 ? `${v.language.toUpperCase()} ` : "";
+        if (v.status === "built" && v.archive) {
+          return (
+            <span key={v.language} className="small" title={v.archive.path}>
+              <Badge tone="info">{lang}Volume CBZ</Badge> <span className="mono">{v.archive.path.split("/").pop()}</span>
+              <span className="muted"> · {v.archive.chapters} ch. · {v.archive.pages} p.{v.archive.automatic ? " · automatic" : ""}</span>
+            </span>
+          );
+        }
+        if (!v.buildable) {
+          return (
+            <span key={v.language} className="small muted" title={v.problems.join("\n")}>
+              {lang}Volume CBZ: not complete — {v.problems[0] ?? "no chapters in the library"}
+            </span>
+          );
+        }
+        const notes = [
+          v.status === "open" ? "MangaDex lists no later volume yet: this volume may still get more chapters." : null,
+          ...v.warnings,
+        ].filter(Boolean);
+        const ask = () => {
+          const lines = [
+            `Pack volume ${v.volume}${lang ? ` (${v.language.toUpperCase()})` : ""} into one CBZ?`,
+            "",
+            `${v.chapters.length} chapter(s) → ${v.destination}`,
+            "",
+            "The CBZ is checked page by page; only then are the chapter folders packed into it DELETED from the library (the Download share has no recycle bin). A chapter changed meanwhile, or with other files in its folder, is kept. Ad pages you have not removed yet stay inside the volume.",
+          ];
+          if (notes.length) lines.push("", "Please note:", ...notes.map((n) => `• ${n}`));
+          if (window.confirm(lines.join("\n"))) build.mutate(v);
+        };
+        return (
+          <span key={v.language} className="row" style={{ gap: 6 }}>
+            <button type="button" className={`btn xs ${v.status === "ready" ? "primary" : ""}`} disabled={build.isPending} onClick={ask}
+              title={notes.join("\n") || "Every chapter of this volume is in the library"}>
+              📦 {lang}Pack volume CBZ{notes.length ? "…" : ""}
+            </button>
+            {notes.length > 0 && <span className="small muted">{v.status === "open" ? "latest volume" : `${v.warnings.length} warning(s)`}</span>}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -688,7 +768,10 @@ function ChapterRow({ r, selectable, selected, onToggle, onFromHere, onAction }:
       </div>
       <div className="ch-side">
         {r.external ? <Badge>External</Badge> : r.unavailable ? <Badge tone="warn">Unavailable</Badge> : null}
-        {job ? <JobStatusBadge job={job} /> : <Badge tone={ls.tone}>{ls.label}</Badge>}
+        {job ? <JobStatusBadge job={job} />
+          : r.in_volume_cbz && r.local_status === "missing_on_disk"
+            ? <span title={r.in_volume_cbz}><Badge tone="info">In volume CBZ</Badge></span>
+            : <Badge tone={ls.tone}>{ls.label}</Badge>}
       </div>
       <div className="ch-actions">
         {r.local_status === "missing" && !job && !r.external && !r.unavailable && (

@@ -501,6 +501,32 @@ class ArchiveFolder(Base):
     indexed_at: Mapped[datetime] = _now_col(nullable=False)
 
 
+class VolumeArchive(Base):
+    """A volume CBZ built by the app (see app.services.volumes).
+
+    The chapters packed into it had their folders (or chapter CBZ files) deleted; their
+    releases are *Folder deleted* like chapters moved out by hand, and ``release_ids``
+    tells the UI they are in this volume.
+    """
+
+    __tablename__ = "volume_archives"
+    __table_args__ = (UniqueConstraint("manga_id", "language_code", "volume", name="uq_volume_archive"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    manga_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("manga.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    language_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    volume: Mapped[str] = mapped_column(String(32), nullable=False)
+    rel_path: Mapped[str] = mapped_column(Text, nullable=False)
+    release_ids: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
+    chapters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    automatic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+
 class AppSetting(Base):
     __tablename__ = "app_settings"
 

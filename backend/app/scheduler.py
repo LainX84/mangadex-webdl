@@ -108,6 +108,13 @@ class Scheduler:
                 except Exception:
                     log.exception("weekly_library_check_schedule_failed")
                 try:
+                    from app.services.volumes import enqueue_auto_volumes
+
+                    if enqueue_auto_volumes(None):
+                        log.info("auto_volumes_queued")
+                except Exception:
+                    log.exception("auto_volumes_schedule_failed")
+                try:
                     from app.services.junk import enqueue_cleanup
 
                     if enqueue_cleanup():

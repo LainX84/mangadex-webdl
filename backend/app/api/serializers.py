@@ -123,7 +123,8 @@ def release_brief(r: ChapterRelease) -> dict[str, Any]:
     }
 
 
-def release_out(r: ChapterRelease, job: DownloadJob | None, wanted: bool) -> dict[str, Any]:
+def release_out(r: ChapterRelease, job: DownloadJob | None, wanted: bool,
+                in_volume: str | None = None) -> dict[str, Any]:
     return {
         **release_brief(r),
         "group_ids": r.group_ids or [],
@@ -134,6 +135,7 @@ def release_out(r: ChapterRelease, job: DownloadJob | None, wanted: bool) -> dic
         "unavailable": r.is_unavailable,
         "local_status": r.local_status,
         "folder": r.folder_rel_path,
+        "in_volume_cbz": in_volume,
         "local_page_count": r.local_page_count,
         "downloaded_at": iso(r.downloaded_at),
         "wanted": wanted,

@@ -13,6 +13,10 @@ Neither side is assumed to be correct:
 
 Nothing in this module deletes or rewrites user files. The only write is adding
 a hidden marker file to folders that are positively matched on import.
+
+Chapters stored as ``{Chapter}.cbz`` (``app.library.entries``) are recognised only by the
+release marker inside the archive; other ``.cbz`` files (volumes built by the app, your
+own archives) are never linked to a release and never sent to Review.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.enums import JobStatus, LocalStatus, ReviewKind, ReviewStatus, ScanStatus
+from app.library.entries import entry_exists, is_cbz, page_sizes, split_name
 from app.library.marker import (
     PARTIAL_PREFIX,
     list_page_files,
@@ -92,7 +97,8 @@ def link_folder(session: Session, root: Path, release: ChapterRelease, rel_path:
         modified = sorted(m.get("file") for m in manifest) != files
         status = LocalStatus.MODIFIED if modified else (LocalStatus.IMPORTED if imported and marker.get("imported") else LocalStatus.DOWNLOADED)
     else:
-        manifest = [{"index": i, "file": f, "size": (folder / f).stat().st_size} for i, f in enumerate(files, 1)]
+        sizes = page_sizes(folder)
+        manifest = [{"index": i, "file": f, "size": sizes.get(f)} for i, f in enumerate(files, 1)]
         write_release_marker(folder, {
             "chapter_id": str(release.id),
             "manga_id": str(release.manga_id),
@@ -129,7 +135,7 @@ def verify_linked_releases(session: Session, root: Path, manga_id: uuid.UUID) ->
         ChapterRelease.manga_id == manga_id, ChapterRelease.folder_rel_path.is_not(None)
     )):
         folder = resolve_rel(root, r.folder_rel_path)
-        if not folder.is_dir():
+        if not entry_exists(folder):
             if r.local_status != LocalStatus.MISSING_ON_DISK:
                 r.local_status = LocalStatus.MISSING_ON_DISK
                 stats["missing_on_disk"] += 1
@@ -163,6 +169,8 @@ def _chapter_dirs(manga_dir: Path) -> list[tuple[list[str], Path]]:
     out: list[tuple[list[str], Path]] = []
 
     def walk(d: Path, ctx: list[str]) -> None:
+        for cbz in _chapter_cbz_files(d):
+            out.append((ctx, cbz))
         for sub in _subdirs(d):
             if sub.name.startswith(PARTIAL_PREFIX):
                 continue
@@ -173,6 +181,16 @@ def _chapter_dirs(manga_dir: Path) -> list[tuple[list[str], Path]]:
 
     walk(manga_dir, [])
     return out
+
+
+def _chapter_cbz_files(path: Path) -> list[Path]:
+    """Chapter CBZ files in ``path``: only those carrying a release marker."""
+    try:
+        files = sorted(p for p in path.iterdir()
+                       if is_cbz(p) and p.is_file() and not p.is_symlink() and not p.name.startswith("."))
+    except FileNotFoundError:
+        return []
+    return [p for p in files if read_release_marker(p) is not None]
 
 
 def import_manga_folder(session: Session, root: Path, manga: Manga, client: MangaDexClient | None = None) -> dict:
@@ -245,7 +263,7 @@ def import_manga_folder(session: Session, root: Path, manga: Manga, client: Mang
             lang_code = selected[0] if len(selected) == 1 else None
             allowed_langs = {lang_code} if lang_code else set(selected) or {r.language_code for r in releases}
 
-        parsed = parse_chapter_folder(ch_dir.name, placeholder)
+        parsed = parse_chapter_folder(split_name(ch_dir.name)[0], placeholder)
         candidates: list[ChapterRelease] = []
         if allowed_langs and parsed:
             for r in releases:
@@ -266,7 +284,7 @@ def import_manga_folder(session: Session, root: Path, manga: Manga, client: Mang
                 candidates.append(r)
         if len(candidates) > 1:
             # "… - Team X": the group in the chapter folder name tells same-number releases apart.
-            by_suffix = [c for c in candidates if name_ends_with_group(ch_dir.name, c.group_names)]
+            by_suffix = [c for c in candidates if name_ends_with_group(split_name(ch_dir.name)[0], c.group_names)]
             if by_suffix:
                 candidates = by_suffix
         if len(candidates) == 1:

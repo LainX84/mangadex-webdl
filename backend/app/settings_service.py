@@ -96,6 +96,16 @@ class AppSettings(BaseModel):
     # Rename chapter folders in the library when MangaDex assigns (or changes) their volume.
     rename_on_volume_change: bool = True
 
+    # Output format. Pages: kept as MangaDex serves them (default), all converted to PNG, JPEG,
+    # lossy or lossless WebP, or "mixed" (lossless space saving) (app.library.images.convert_page).
+    # Chapters: a folder of pages (default) or one .cbz per chapter (app.library.entries).
+    # Volumes: one .cbz per complete volume in the manga folder (app.services.volumes).
+    page_format: Literal["original", "png", "jpg", "webp_lossy", "webp_lossless", "mixed"] = "original"
+    webp_quality: int = Field(90, ge=75, le=100)
+    jpeg_quality: int = Field(92, ge=75, le=100)
+    chapter_cbz: bool = False
+    volume_cbz_auto: bool = False
+
     # Content
     content_ratings: list[str] = Field(default_factory=lambda: ["safe", "suggestive", "erotica", "pornographic"])
     use_data_saver: bool = False
@@ -130,6 +140,13 @@ class AppSettings(BaseModel):
 
     # Display only: MangaDex tags (by English name) highlighted in their own colour.
     highlighted_tags: list[HighlightedTag] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("page_format") == "webp_lossless_png":
+            data = {**data, "page_format": "mixed"}  # value of the first 1.1.0 build
+        return data
 
     @model_validator(mode="after")
     def _check(self) -> AppSettings:

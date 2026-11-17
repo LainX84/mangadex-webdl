@@ -1,4 +1,4 @@
-"""Image validation without modifying or re-encoding the image bytes."""
+"""Image validation without modifying the image bytes, and the optional page conversion (``convert_page``)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import io
 import re
 import warnings
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from app.mangadex.errors import InvalidImageError
 
@@ -116,3 +116,153 @@ def validate_image(
             return ext  # Pillow builds without AVIF support: rely on the signature check
         raise InvalidImageError(f"Corrupt image data: {exc.__class__.__name__}") from exc
     return _FORMAT_EXT.get(fmt or "", ext)
+
+
+# --------------------------------------------------------------------- optional page conversion
+
+# Settings → Output format → Page images (AppSettings.page_format).
+PAGE_FORMATS = ("original", "png", "jpg", "webp_lossy", "webp_lossless", "mixed")
+LEGACY_PAGE_FORMATS = {"webp_lossless_png": "mixed"}  # short-lived value of the first 1.1.0 build
+WEBP_MAX_DIMENSION = 16383  # WebP format limit
+JPEG_MAX_DIMENSION = 65500  # JPEG format limit (65535) with a margin
+MIXED_WEBP_MIN_SAVING = 0.05  # MIXED: lossless WebP only when it beats the best PNG/original by 5 %
+
+
+def _open_page(data: bytes) -> Image.Image:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    return img
+
+
+def _is_animated(img: Image.Image) -> bool:
+    return bool(getattr(img, "is_animated", False)) and getattr(img, "n_frames", 1) > 1
+
+
+def _normalised(img: Image.Image) -> Image.Image:
+    """The pixels in a mode every encoder understands (L, LA, RGB or RGBA), without changing them.
+
+    RGB pages whose three channels are identical (grayscale scans saved in colour) become L.
+    CMYK and other exotic modes are converted to RGB (the only lossy step, and only for those).
+    """
+    im = img
+    if im.mode == "P":
+        im = im.convert("RGBA" if "transparency" in im.info else "RGB")
+    elif im.mode == "PA":
+        im = im.convert("RGBA")
+    elif im.mode == "1":
+        im = im.convert("L")
+    elif im.mode in ("I;16", "I;16B", "I;16L", "I", "F"):
+        im = im.convert("L")
+    elif im.mode not in ("L", "LA", "RGB", "RGBA"):
+        im = im.convert("RGB")
+    if im.mode == "RGBA" and im.getchannel("A").getextrema() == (255, 255):
+        im = im.convert("RGB")  # fully opaque: the alpha channel carries nothing
+    if im.mode == "LA" and im.getchannel("A").getextrema() == (255, 255):
+        im = im.convert("L")
+    if im.mode == "RGB":
+        r, g, b = im.split()
+        if ImageChops.difference(r, g).getbbox() is None and ImageChops.difference(g, b).getbbox() is None:
+            im = r  # grayscale stored as RGB: one channel holds all the information
+    return im
+
+
+def _pixels_equal(a: Image.Image, b_data: bytes) -> bool:
+    """Do the encoded bytes decode to exactly the pixels of ``a``?"""
+    b = _open_page(b_data)
+    mode = "RGBA" if a.mode in ("RGBA", "LA") else "RGB"
+    return a.size == b.size and a.convert(mode).tobytes() == b.convert(mode).tobytes()
+
+
+def _encode(im: Image.Image, fmt: str, quality: int, icc: bytes | None) -> bytes:
+    out = io.BytesIO()
+    extra = {"icc_profile": icc} if icc else {}
+    if fmt == "png":
+        im.save(out, "PNG", optimize=True, **extra)
+    elif fmt == "jpg":
+        if im.mode in ("RGBA", "LA"):  # JPEG has no transparency: flatten on white, like a reader would
+            bg = Image.new("RGB" if im.mode == "RGBA" else "L", im.size, "white")
+            bg.paste(im, mask=im.getchannel("A"))
+            im = bg
+        q = max(75, min(100, int(quality)))
+        im.save(out, "JPEG", quality=q, optimize=True, subsampling=0 if q >= 90 else 2, **extra)
+    elif fmt == "webp_lossless":
+        im.save(out, "WEBP", lossless=True, quality=80, method=4, exact=True, **extra)
+    elif fmt == "webp_lossy":
+        im.save(out, "WEBP", quality=max(75, min(100, int(quality))), method=6, **extra)
+    else:
+        raise ValueError(fmt)
+    return out.getvalue()
+
+
+_EXT = {"png": "png", "jpg": "jpg", "webp_lossless": "webp", "webp_lossy": "webp"}
+
+
+def _fits(fmt: str, im: Image.Image) -> bool:
+    limit = WEBP_MAX_DIMENSION if fmt.startswith("webp") else JPEG_MAX_DIMENSION if fmt == "jpg" else None
+    return limit is None or (im.width <= limit and im.height <= limit)
+
+
+def convert_page(data: bytes, ext: str, page_format: str, quality: int = 90,
+                 jpeg_quality: int = 90) -> tuple[bytes, str]:
+    """Convert a validated page for ``AppSettings.page_format``. Returns ``(bytes, extension)``.
+
+    * ``original`` — unchanged.
+    * ``png`` / ``webp_lossless`` — every page in that format, pixel for pixel (verified after
+      encoding). A page already in the format is re-encoded only when that makes it smaller.
+    * ``jpg`` / ``webp_lossy`` — every page in that format at ``jpeg_quality`` / ``quality``.
+      A page already in the format is kept as it is: compressing it again would only lose quality.
+    * ``mixed`` — saves space without losing anything: JPEG and WebP pages are kept; PNG, GIF and
+      BMP pages become the smallest of the original, an optimised PNG and a lossless WebP (WebP
+      only when it saves at least 5 %), every candidate verified pixel for pixel.
+
+    Pages a format cannot hold use the closest format that can: wider or taller than 16 383 px
+    for WebP → PNG (lossless) or JPEG (lossy); beyond 65 500 px for JPEG → PNG. Animated GIFs
+    stay GIF. Any decoding or encoding error keeps the original bytes, so a conversion problem
+    never fails a download.
+    """
+    page_format = LEGACY_PAGE_FORMATS.get(page_format, page_format)
+    if page_format not in PAGE_FORMATS or page_format == "original":
+        return data, ext
+    try:
+        img = _open_page(data)
+        if _is_animated(img):
+            return data, ext
+        icc = img.info.get("icc_profile")
+        im = _normalised(img)
+
+        if page_format == "mixed":
+            if ext in ("jpg", "webp", "avif"):
+                return data, ext  # already compressed: re-encoding would lose quality or grow
+            best, best_ext = data, ext
+            png = _encode(im, "png", quality, icc)
+            if len(png) < len(best) and _pixels_equal(im, png):
+                best, best_ext = png, "png"
+            if _fits("webp_lossless", im):
+                webp = _encode(im, "webp_lossless", quality, icc)
+                if len(webp) <= len(best) * (1 - MIXED_WEBP_MIN_SAVING) and _pixels_equal(im, webp):
+                    best, best_ext = webp, "webp"
+            return best, best_ext
+
+        fmt = page_format
+        if not _fits(fmt, im):
+            fmt = "jpg" if fmt == "webp_lossy" else "png"
+            if not _fits(fmt, im):
+                fmt = "png"
+        target = _EXT[fmt]
+        lossless = fmt in ("png", "webp_lossless")
+        if ext == target and not lossless:
+            return data, ext  # a JPEG stays the JPEG it is, a lossy WebP stays as uploaded
+        if ext == "webp" and fmt == "webp_lossless":
+            return data, ext  # may be lossy inside: a lossless copy would only be bigger
+        out = _encode(im, fmt, jpeg_quality if fmt == "jpg" else quality, icc)
+        if lossless and not _pixels_equal(im, out):
+            return data, ext
+        if ext == target and len(out) >= len(data):
+            return data, ext  # same format: keep the smaller of the two identical images
+        with Image.open(io.BytesIO(out)) as check:
+            check.verify()
+        return out, target
+    except Exception:  # noqa: BLE001  (keep the original page)
+        return data, ext

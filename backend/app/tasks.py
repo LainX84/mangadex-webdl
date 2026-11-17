@@ -82,6 +82,34 @@ def task_archive_index() -> dict:
         get_redis().delete("mdm:archive_index_pending")
 
 
+def task_build_volume(manga_id: str, language: str, volume: str, allow_warnings: bool = False,
+                      allow_open: bool = False) -> dict:
+    """Volume CBZ requested from the UI (app.services.volumes)."""
+    from app.services.control import record_event
+    from app.services.volumes import BUILD_PENDING_KEY, VolumeError, build_volume
+
+    mid = uuid.UUID(manga_id)
+    try:
+        with session_scope() as s:
+            return build_volume(s, mid, language, volume, allow_warnings=allow_warnings, allow_open=allow_open)
+    except VolumeError as exc:
+        with session_scope() as s:
+            record_event(s, "volume_cbz_failed", f"Volume {volume} ({language}) not packed: {exc}", manga_id=mid)
+        return {"error": str(exc)}
+    finally:
+        get_redis().delete(f"{BUILD_PENDING_KEY}:{manga_id}:{language}:{volume}")
+
+
+def task_auto_volumes(manga_id: str | None) -> dict:
+    from app.services.volumes import AUTO_PENDING_KEY, run_auto_volumes
+
+    try:
+        return run_auto_volumes(uuid.UUID(manga_id) if manga_id else None)
+    finally:
+        if manga_id:  # the hourly sweep key expires by itself (once an hour at most)
+            get_redis().delete(f"{AUTO_PENDING_KEY}:{manga_id}")
+
+
 def task_junk_cleanup() -> dict:
     from app.services.junk import remove_junk_files
 

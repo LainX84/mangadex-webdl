@@ -428,6 +428,8 @@ table.simple th, table.simple td { text-align: left; padding: 8px 6px; border-bo
 .vol-head .vol-range { text-align: center; color: var(--ink-2); font-size: 0.9rem; }
 .vol-head .vol-count { text-align: right; color: var(--ink-2); font-size: 0.9rem; }
 .ch-list { display: flex; flex-direction: column; gap: 4px; }
+.vol-cbz { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 0 4px 6px; }
+.vol-cbz .mono { overflow-wrap: anywhere; }
 .ch-row {
   display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center;
   padding: 6px 10px 6px 8px; background: var(--paper-2); border-radius: 6px; border-left: 3px solid var(--rule);

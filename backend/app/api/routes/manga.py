@@ -429,13 +429,16 @@ def list_chapters(
                    and r.id not in open_ids]
         keep = {r.id for r in catalog.one_per_chapter(pending, covered)}
         wanted_ids = {rid for rid in wanted_ids if rid in keep or rid not in {p.id for p in pending}}
+    from app.services.volumes import volume_release_map
+
+    in_volume = volume_release_map(db, m.id)
     items = []
     for r in releases:
         wanted = r.id in wanted_ids
         if (scope == "wanted" and not wanted and r.local_status not in _HAVE
                 and r.local_status not in (LocalStatus.EXTERNAL, LocalStatus.REPLACED) and r.id not in latest_jobs):
             continue
-        items.append(release_out(r, latest_jobs.get(r.id), wanted))
+        items.append(release_out(r, latest_jobs.get(r.id), wanted, in_volume.get(str(r.id))))
     items.sort(key=lambda x: (x["sort"] is None, x["sort"] or 0, x["volume"] or "", x["language"], ",".join(x["groups"])))
     return {"items": items, "total": len(items)}
 
@@ -566,6 +569,40 @@ def library_scan(manga_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
 
     queued = enqueue_library_scan(manga_id, queue_missing=False)
     return {"queued": queued}
+
+
+class BuildVolumeIn(BaseModel):
+    language: str = Field(min_length=1, max_length=16)
+    volume: str = Field(min_length=1, max_length=32)
+    confirm: bool = False  # the packed chapter folders are deleted
+    allow_warnings: bool = False
+    allow_open: bool = False
+
+
+@router.get("/manga/{manga_id}/volumes")
+def list_volumes(manga_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    """Numbered volumes per language: built, ready to pack, open (may still grow) or incomplete."""
+    from app.library.storage import StorageUnavailable, require_library
+    from app.services.volumes import plan_volumes
+
+    m = _not_pending(_manga_or_404(db, manga_id))
+    try:
+        root = require_library()
+    except StorageUnavailable as exc:
+        return {"available": False, "error": str(exc), "items": []}
+    plans = plan_volumes(db, root, m)
+    db.rollback()
+    return {"available": True, "auto": load_settings(db).volume_cbz_auto, "items": [p.to_dict() for p in plans]}
+
+
+@router.post("/manga/{manga_id}/volumes/build")
+def build_volume_route(manga_id: uuid.UUID, body: BuildVolumeIn, db: Session = Depends(get_db)) -> dict:
+    from app.services.volumes import enqueue_build
+
+    _not_pending(_manga_or_404(db, manga_id))
+    if not body.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Confirm: the packed chapter folders will be deleted")
+    return {"queued": enqueue_build(manga_id, body.language, body.volume, body.allow_warnings, body.allow_open)}
 
 
 # ----------------------------------------------------------------- releases

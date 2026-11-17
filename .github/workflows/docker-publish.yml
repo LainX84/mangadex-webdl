@@ -6,7 +6,7 @@
 #   Variables: DOCKERHUB_USERNAME   your Docker Hub user or organisation
 #   Secrets:   DOCKERHUB_TOKEN      a Docker Hub access token with Read & Write scope
 #
-# Tags: push to main → :edge · tag v1.2.3 → :1.2.3, :1.2, :1, :latest · pull requests → build only.
+# Tags: tag v1.2.3 → :1.2.3 and :latest · pushes to main and pull requests → build only.
 name: Docker image
 
 on:
@@ -85,7 +85,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

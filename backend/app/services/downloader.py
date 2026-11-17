@@ -12,6 +12,11 @@ versions) are moved to ``MDM_REPLACED_ROOT``, also outside the library. A group'
 revision (same-group re-upload or a new MangaDex version with different pages) instead
 deletes the old copy when it is still exactly as downloaded; a copy with manual edits
 is still kept in the replaced folder.
+
+Optional output formats (Settings → Output format): pages can be converted to PNG, JPEG,
+WebP or the space-saving MIXED mode (``app.library.images.convert_page``) as they arrive, and a finished chapter can be packed
+into ``{Chapter}.cbz`` (``app.library.entries``) in the staging folder before it is moved
+into the library. A revision keeps the kind (folder or CBZ) of the copy it replaces.
 """
 
 from __future__ import annotations
@@ -31,7 +36,18 @@ from sqlalchemy import delete, select, update
 from app.config import get_config
 from app.db import session_scope
 from app.enums import ErrorKind, JobStatus, LocalStatus, PageStatus, PauseReason, ReviewKind, ReviewStatus
-from app.library.images import extension_from_filename, validate_image
+from app.library.entries import (
+    comic_info_xml,
+    entry_exists,
+    entry_name,
+    folder_to_cbz,
+    is_cbz,
+    move_entry,
+    remove_entry,
+    split_name,
+    untouched_cbz,
+)
+from app.library.images import convert_page, extension_from_filename, validate_image
 from app.library.marker import (
     is_legacy_partial,
     list_page_files,
@@ -229,6 +245,12 @@ def compute_paths(session, root: Path, job: DownloadJob, release: ChapterRelease
             return Paths(root, job.target_rel_path, temp_rel, staging)
         # Not created yet: name it again (a second group may now need " - {Group}").
 
+    if job.is_refresh and release.folder_rel_path and \
+            release.folder_rel_path.rsplit("/", 1)[0] == "/".join(base_parts) and \
+            entry_exists(resolve_rel(root, release.folder_rel_path)):
+        # New MangaDex version: replace the copy in place, keeping its kind (folder or CBZ).
+        return Paths(root, release.folder_rel_path, temp_rel, staging)
+
     if job.replaces_release_id:
         # Same-group re-upload: the new copy takes the old one's folder (old one -> .mdm-replaced/).
         old = session.get(ChapterRelease, job.replaces_release_id)
@@ -239,7 +261,8 @@ def compute_paths(session, root: Path, job: DownloadJob, release: ChapterRelease
 
     name = desired_chapter_folder_name(release, settings,
                                        release.id in group_suffix_ids(session, root, manga.id, release))
-    for candidate in (name, with_collision_suffix(name, str(release.id))):
+    as_cbz = settings.chapter_cbz
+    for candidate in (entry_name(name, as_cbz), entry_name(with_collision_suffix(name, str(release.id)), as_cbz)):
         rel = "/".join([*base_parts, candidate])
         owner = session.scalar(
             select(ChapterRelease.id).where(ChapterRelease.folder_rel_path == rel, ChapterRelease.id != release.id)
@@ -259,7 +282,8 @@ def compute_paths(session, root: Path, job: DownloadJob, release: ChapterRelease
                 rel,
             )
         return Paths(root, rel, temp_rel, staging)
-    raise DestinationConflict("Both the normal and the suffixed folder name are taken", "/".join([*base_parts, name]))
+    raise DestinationConflict("Both the normal and the suffixed folder name are taken",
+                              "/".join([*base_parts, entry_name(name, as_cbz)]))
 
 
 # --------------------------------------------------------------------- download
@@ -319,7 +343,7 @@ def _download(job_id: int, client: MangaDexClient, root: Path | None) -> None:
     moved_out = False
     if refresh or replaces:
         prev_rel = old_rel if replaces else own_rel
-        if not prev_rel or not resolve_rel(root, prev_rel).is_dir():
+        if not prev_rel or not entry_exists(resolve_rel(root, prev_rel)):
             if prev_rel and in_revision_window(revised_downloaded_at, revision_days):
                 moved_out = True
             else:
@@ -374,8 +398,9 @@ def _finalize_moved_out(s, job_id: int, release: ChapterRelease, old: ChapterRel
     dest_dir = safe_join(base, *parents) if parents else base
     dest_dir.mkdir(parents=True, exist_ok=True)  # below the checked replaced folder only
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    dest = safe_join(dest_dir, f"{paths.target_rel.rsplit('/', 1)[-1]} {stamp}")
-    move_dir(paths.temp, dest)
+    stem, ext = split_name(paths.target_rel.rsplit("/", 1)[-1])
+    dest = safe_join(dest_dir, f"{stem} {stamp}{ext}")
+    _move_finished(paths, dest)
     replaced_rel = dest.relative_to(base).as_posix()
 
     revised = old if old is not None else release
@@ -480,8 +505,9 @@ def _backup(root: Path, rel: str) -> Path:
     dest_dir = safe_join(base, *parents) if parents else base
     dest_dir.mkdir(parents=True, exist_ok=True)  # below the checked replaced folder only
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    dest = safe_join(dest_dir, f"{src.name} {stamp}")
-    move_dir(src, dest)
+    stem, ext = (src.name, "") if src.is_dir() else split_name(src.name)
+    dest = safe_join(dest_dir, f"{stem} {stamp}{ext}")
+    move_entry(src, dest)
     return dest
 
 
@@ -503,6 +529,8 @@ def is_untouched_copy(folder: Path) -> bool:
     expected = {m.get("file"): m for m in pages if isinstance(m, dict) and m.get("file")}
     if not expected or len(expected) != len(pages):
         return False
+    if is_cbz(folder) and not folder.is_dir():
+        return untouched_cbz(folder, expected, RELEASE_MARKER)
     try:
         for entry in folder.iterdir():
             if entry.name == RELEASE_MARKER or entry.name.lower() in _IGNORED_EXTRA_FILES:
@@ -526,8 +554,9 @@ def _set_aside(root: Path, rel: str, staging: Path) -> tuple[Path | None, Path |
     """
     src = resolve_rel(root, rel)
     if is_untouched_copy(src):
-        dest = safe_join(staging, f"{DISCARD_PREFIX}{uuid.uuid4().hex[:12]}")
-        move_dir(src, dest)
+        ext = "" if src.is_dir() else split_name(src.name)[1]
+        dest = safe_join(staging, f"{DISCARD_PREFIX}{uuid.uuid4().hex[:12]}{ext}")
+        move_entry(src, dest)
         return dest, None
     return None, _backup(root, rel)
 
@@ -541,7 +570,7 @@ def _old_copy_fate(kept_backup: bool, discard: list[Path]) -> str:
 def _drop_discarded(discard: list[Path]) -> None:
     for d in discard:
         try:
-            shutil.rmtree(d)
+            remove_entry(d)
         except OSError as exc:
             log.warning("discard_remove_failed", path=str(d), error=str(exc))
 
@@ -623,9 +652,13 @@ def _download_pages(job_id, release_id, client, at_home, pending, temp, total, s
                 client.report(url, True, len(resp.content), resp.duration_ms, resp.cached)
                 src_ext = extension_from_filename(rec.source_filename)
                 final_ext = src_ext if src_ext == ext else ext
+                data = resp.content
+                if settings.page_format != "original":
+                    data, final_ext = convert_page(data, final_ext, settings.page_format, settings.webp_quality,
+                                                   settings.jpeg_quality)
                 name = page_filename(rec.page_index, final_ext, total)
-                atomic_write_bytes(temp / name, resp.content)
-                return rec, name, len(resp.content), hashlib.sha256(resp.content).hexdigest()
+                atomic_write_bytes(temp / name, data)
+                return rec, name, len(data), hashlib.sha256(data).hexdigest()
             except MaintenanceError:
                 raise  # all of MangaDex is offline: no point trying other nodes
             except (InvalidImageError, NetworkError, ServerError, AccessDeniedError) as exc:
@@ -707,6 +740,7 @@ def _finalize(job_id: int, release_id: uuid.UUID, paths: Paths, redownload: bool
         for leftover in temp.glob(".*.tmp"):
             leftover.unlink(missing_ok=True)
         marker_manga = s.get(Manga, release.manga_id)
+        _drop_stale_pack(paths)
         write_release_marker(temp, {
             "chapter_id": str(release.id),
             "manga_id": str(release.manga_id),
@@ -722,6 +756,10 @@ def _finalize(job_id: int, release_id: uuid.UUID, paths: Paths, redownload: bool
             "pages": manifest,
         })
         fsync_dir(temp)
+        if is_cbz(paths.target_rel):
+            # One .cbz per chapter: packed in the staging folder, moved in like a folder.
+            folder_to_cbz(temp, _packed(paths),
+                          {"ComicInfo.xml": _chapter_comic_info(release, marker_manga, len(manifest))})
 
         # The NAS may have gone away during the download: never create library folders then.
         lib = check_library(paths.root, write_probe=False)
@@ -747,10 +785,10 @@ def _finalize(job_id: int, release_id: uuid.UUID, paths: Paths, redownload: bool
                 _backup(paths.root, paths.target_rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            move_dir(temp, target)
+            _move_finished(paths, target)
         except BaseException:
-            if len(discard) == 1 and not target.exists():
-                move_dir(discard.pop(), target)  # put the old copy back
+            if len(discard) == 1 and not target.exists() and is_cbz(discard[0]) == is_cbz(target):
+                move_entry(discard.pop(), target)  # put the old copy back
             raise
         if old is not None:
             old_rel = old.folder_rel_path
@@ -790,6 +828,55 @@ def _finalize(job_id: int, release_id: uuid.UUID, paths: Paths, redownload: bool
                      release_id=release_id, manga_id=release.manga_id)
     _drop_discarded(discard)
     log.info("download_completed", job_id=job_id, release_id=str(release_id), pages=len(manifest))
+    try:
+        from app.services.volumes import enqueue_auto_volumes
+
+        enqueue_auto_volumes(_manga_of(release_id))
+    except Exception:  # noqa: BLE001  (never fail a finished download for this)
+        log.warning("auto_volume_enqueue_failed", release_id=str(release_id), exc_info=True)
+
+
+def _manga_of(release_id: uuid.UUID) -> uuid.UUID | None:
+    with session_scope() as s:
+        r = s.get(ChapterRelease, release_id)
+        return r.manga_id if r is not None else None
+
+
+def _packed(paths: Paths) -> Path:
+    """The chapter CBZ built in the staging folder before it moves into the library."""
+    return safe_join(paths.staging, f"{paths.temp_rel}.cbz")
+
+
+def _drop_stale_pack(paths: Paths) -> None:
+    p = _packed(paths)
+    if p.is_file():
+        p.unlink()  # from an earlier attempt: rebuilt from the verified pages
+
+
+def _move_finished(paths: Paths, dest: Path) -> None:
+    """Move the finished chapter (its folder, or the CBZ packed from it) to ``dest``."""
+    if is_cbz(dest):
+        move_entry(_packed(paths), dest)
+        shutil.rmtree(paths.temp, ignore_errors=True)  # its pages are in the CBZ now
+    else:
+        move_dir(paths.temp, dest)
+
+
+def _chapter_comic_info(release: ChapterRelease, manga: Manga | None, pages: int) -> bytes:
+    pub = release.publish_at
+    return comic_info_xml({
+        "Title": release.title,
+        "Series": manga.display_title if manga else None,
+        "Number": release.chapter,
+        "Volume": release.volume,
+        "Year": pub.year if pub else None, "Month": pub.month if pub else None, "Day": pub.day if pub else None,
+        "Web": f"https://mangadex.org/chapter/{release.id}",
+        "ScanInformation": " & ".join(n for n in (release.group_names or []) if n) or None,
+        "LanguageISO": release.language_code,
+        "PageCount": pages,
+        "Manga": "Yes",
+        "Notes": "Downloaded from MangaDex by MangaDex WebDL",
+    })
 
 
 def _adopt_existing(job_id: int, release_id: uuid.UUID, paths: Paths) -> None:

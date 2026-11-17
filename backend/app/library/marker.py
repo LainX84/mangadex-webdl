@@ -4,6 +4,9 @@
 original page manifest, so the library can be recognised even with an empty
 database and manual edits can be detected (and left alone).
 ``.mdm-manga.json`` at the top of a manga folder records the manga UUID.
+
+A chapter stored as a CBZ (``app.library.entries``) carries the same marker as a member
+of the archive; the functions below read and write it transparently.
 """
 
 from __future__ import annotations
@@ -28,14 +31,35 @@ def is_legacy_partial(rel: str | None) -> bool:
     return bool(rel) and "/" in rel and rel.rsplit("/", 1)[-1].startswith(PARTIAL_PREFIX)
 
 
-def write_release_marker(folder: Path, data: dict[str, Any]) -> None:
+def release_marker_bytes(data: dict[str, Any]) -> bytes:
     payload = {"schema": 1, "written_at": datetime.now(UTC).isoformat(), **data}
-    atomic_write_bytes(folder / RELEASE_MARKER, json.dumps(payload, indent=2, ensure_ascii=False).encode())
+    return json.dumps(payload, indent=2, ensure_ascii=False).encode()
+
+
+def write_release_marker(folder: Path, data: dict[str, Any]) -> None:
+    from app.library.entries import cbz_replace_member, is_cbz
+
+    if is_cbz(folder) and folder.is_file():
+        cbz_replace_member(folder, RELEASE_MARKER, release_marker_bytes(data))
+        return
+    atomic_write_bytes(folder / RELEASE_MARKER, release_marker_bytes(data))
+
+
+def has_release_marker(folder: Path) -> bool:
+    return read_release_marker(folder) is not None
 
 
 def read_release_marker(folder: Path) -> dict[str, Any] | None:
+    from app.library.entries import cbz_read, is_cbz
+
     try:
-        data = json.loads((folder / RELEASE_MARKER).read_text(encoding="utf-8"))
+        if is_cbz(folder) and not folder.is_dir():
+            raw = cbz_read(folder, RELEASE_MARKER) if folder.is_file() else None
+            if raw is None:
+                return None
+            data = json.loads(raw.decode("utf-8"))
+        else:
+            data = json.loads((folder / RELEASE_MARKER).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) and data.get("chapter_id") else None
     except (OSError, ValueError):
         return None
@@ -58,6 +82,10 @@ IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "avif", "bmp"}
 
 
 def list_page_files(folder: Path) -> list[str]:
+    from app.library.entries import cbz_page_files, is_cbz
+
+    if is_cbz(folder) and not folder.is_dir():
+        return cbz_page_files(folder) if folder.is_file() else []
     out = []
     for entry in folder.iterdir():
         if entry.is_file() and not entry.name.startswith("."):
