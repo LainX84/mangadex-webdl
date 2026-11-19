@@ -242,7 +242,7 @@ Everything is in `.env` (see `.env.example` for all settings and comments):
 
 | Variable | Meaning |
 |---|---|
-| `MDM_IMAGE` | Image to run (`ghcr.io/…` or Docker Hub; pin a version such as `:1.1.0` if you prefer) |
+| `MDM_IMAGE` | Image to run (`ghcr.io/…` or Docker Hub; pin a version such as `:1.1.2` if you prefer) |
 | `MDM_LIBRARY_PATH` | Host folder bind-mounted at `/mangadex` (a dedicated NAS folder holding only the library and its working folders) |
 | `MDM_DOWNLOADS_ROOT` | Library path inside the container (default in the example: `/mangadex/MangaDex`) |
 | `MDM_STAGING_ROOT` | Downloads in progress (`/mangadex/Incoming`); empty = `{library}/.mdm-staging` |
@@ -359,6 +359,12 @@ be paused) and makes no MangaDex requests.
 (*Auto*: day up to ~2 months, week up to a year, month beyond). Dates are local days in the browser's time zone.
 With a preset other than *All*, the headline numbers are compared with the previous period of the same length.
 
+**New releases / Backlog / All.** By default the page counts only *new releases*: chapters downloaded at most 7 days
+after they came out on MangaDex, or published after the title was added. Older chapters are *backlog* — a newly
+added title's back catalogue, a bulk import — and would otherwise turn one day into a spike that flattens the chart
+and skews averages, the busiest day and streaks. The switch shows only the backlog or everything; with *All*, each
+chapter bar is split into new releases and backlog. The rest of the page follows the switch.
+
 **Filters** (combinable; every active filter is a removable chip; the whole state is in the URL, so a view can be
 bookmarked): series, genres/themes/tags (*Any tag* / *All tags*), type (Manga / Manhwa / Manhua, from the original
 language), demographic, content rating, publication status, scanlation group, chapter language. Almost everything on
@@ -391,7 +397,8 @@ toggles that filter; clicking a bar of the activity chart narrows the period to 
 - *Moved out*: chapters whose folder is no longer in the library (*Folder deleted*), e.g. already packed into CBZ.
 
 **API** (session required, read-only): `GET /api/stats/options` and
-`GET /api/stats?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Europe/London&bucket=auto|day|week|month` plus the repeatable
+`GET /api/stats?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Europe/London&bucket=auto|day|week|month&kind=all|new|backlog`
+(`kind` defaults to `all`; the summary and every timeline bucket also carry `new_chapters` / `backlog_chapters`) plus the repeatable
 filters `manga`, `tag` (+ `tag_match=any|all`), `type`, `rating`, `status`, `demographic`, `lang`, `group`.
 
 ## MangaDex account: followed list & fast updates
@@ -815,7 +822,7 @@ Suites: **backend 132 tests** (`test_api_auth`, `test_archive`, `test_group_excl
 Release:
 
 ```sh
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.1.2 && git push origin v1.1.2
 ```
 
 ## Known limitations

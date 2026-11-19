@@ -9,6 +9,12 @@ manga; filters on the release (language, scanlation group) select the chapters;
 ``from``/``to`` (local dates in ``tz``, inclusive) select the period. Totals that
 describe the library *now* (followed titles, chapters on disk, queue) ignore the
 period but honour the other filters.
+
+``kind`` separates *new releases* from *backlog*. A download is a new release when
+the chapter came out on MangaDex at most ``NEW_RELEASE_WINDOW`` before it was
+downloaded, or after the title was added to the service; anything older is backlog
+(a newly added title's earlier chapters, a bulk import). Backlog is real work but
+not activity: one big import would otherwise dwarf every other day on the chart.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ TYPE_BY_LANG = {"ja": "manga", "ko": "manhwa", "zh": "manhua", "zh-hk": "manhua"
 LIBRARY_STATUSES = ("downloaded", "modified", "imported")
 TAG_GROUPS = ("genre", "theme", "format", "content")
 TOP_N = 25
+NEW_RELEASE_WINDOW = timedelta(days=7)
 
 
 def _type_of(original_language: str | None) -> str:
@@ -94,6 +101,13 @@ def _service_since(db: Session) -> datetime | None:
         SELECT least((SELECT min(created_at) FROM manga), (SELECT min(created_at) FROM job_events),
                      (SELECT min(started_at) FROM monitoring_runs))
     """)).scalar()
+
+
+def _is_new_release(published: datetime | None, finished: datetime, added_at: datetime) -> bool:
+    """True when the chapter was fresh on MangaDex when it was downloaded (see module doc)."""
+    if published is None:
+        return False
+    return published >= finished - NEW_RELEASE_WINDOW or published >= added_at
 
 
 def _zone(tz: str) -> ZoneInfo:
@@ -209,6 +223,7 @@ def stats(
     to: str | None = Query(None),
     tz: str = Query("UTC", max_length=64),
     bucket: str = Query("auto", pattern="^(auto|day|week|month)$"),
+    kind: str = Query("all", pattern="^(all|new|backlog)$"),
     manga: list[uuid.UUID] = Query(default_factory=list),
     tag: list[str] = Query(default_factory=list),
     tag_match: str = Query("any", pattern="^(any|all)$"),
@@ -285,10 +300,12 @@ def stats(
     timeline: dict[date, dict[str, Any]] = {}
     b = _bucket_start(d_from, bucket)
     while b <= d_to:
-        timeline[b] = {"chapters": 0, "pages": 0, "bytes": 0, "series_added": 0, "scans": 0, "requests": 0}
+        timeline[b] = {"chapters": 0, "pages": 0, "bytes": 0, "series_added": 0, "scans": 0, "requests": 0,
+                       "new_chapters": 0, "backlog_chapters": 0}
         b = _next_bucket(b, bucket)
 
     s = Counter()
+    split = Counter()
     prev = Counter()
     before = 0
     heat = [[0] * 24 for _ in range(7)]
@@ -313,6 +330,16 @@ def stats(
         m = selected.get(mid)
         nbytes, pages = int(nbytes or 0), int(pages or 0)
         if m is None or not release_ok(lcode, gnames or []):
+            continue
+        fresh = _is_new_release(published, fin, m.added_at)
+        if t_from <= fin < t_to:
+            # The split is counted before the kind filter, so the chart can always show it
+            split_key = "new_chapters" if fresh else "backlog_chapters"
+            split[split_key] += 1
+            tl = timeline.get(_bucket_start(fin.astimezone(zone).date(), bucket))
+            if tl is not None:
+                tl[split_key] += 1
+        if (kind == "new" and not fresh) or (kind == "backlog" and fresh):
             continue
         if fin < t_from:
             if fin >= p_from:
@@ -498,7 +525,8 @@ def stats(
         "generated_at": now.isoformat(),
         "tz": str(zone),
         "since": since.isoformat() if since else None,
-        "range": {"from": d_from.isoformat(), "to": d_to.isoformat(), "days": days, "bucket": bucket},
+        "range": {"from": d_from.isoformat(), "to": d_to.isoformat(), "days": days, "bucket": bucket,
+                  "kind": kind, "new_window_days": NEW_RELEASE_WINDOW.days},
         "filtered": {
             "titles": bool(wanted_ids or tag_keys or types or ratings or statuses or demos),
             "releases": filtered_release,
@@ -506,6 +534,7 @@ def stats(
         },
         "summary": {
             "chapters": s["chapters"], "pages": s["pages"], "bytes": s["bytes"],
+            "new_chapters": split["new_chapters"], "backlog_chapters": split["backlog_chapters"],
             "series": len(series_set), "volumes": len(volumes), "chapters_without_volume": tbd,
             "groups": len(per_group), "languages": len(per_lang),
             "active_days": len(per_day),

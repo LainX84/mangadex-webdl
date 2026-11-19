@@ -625,6 +625,11 @@ a.tag.hl:hover { filter: brightness(1.08); }
 .chart .hit { fill: transparent; }
 .chart .bar { fill: var(--accent); opacity: 0.82; transition: opacity 0.12s; }
 .chart .bar.on { opacity: 1; }
+.chart .bar.alt { fill: var(--ink-3); opacity: 0.35; }
+.chart .bar.alt.on { opacity: 0.55; }
+.chart-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+.chart-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: var(--accent); }
+.chart-legend .sw.alt { background: var(--ink-3); opacity: 0.45; }
 .chart .line { fill: none; stroke: var(--info); stroke-width: 2.2; stroke-linejoin: round; }
 .chart .line-dot { fill: var(--card); stroke: var(--info); stroke-width: 2.5; }
 .chart-tip {

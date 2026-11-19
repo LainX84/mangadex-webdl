@@ -23,11 +23,11 @@ interface StatsOptions {
 interface Stats {
   generated_at: string;
   since: string | null;
-  range: { from: string; to: string; days: number; bucket: "day" | "week" | "month" };
+  range: { from: string; to: string; days: number; bucket: "day" | "week" | "month"; kind: Kind; new_window_days: number };
   filtered: { titles: boolean; releases: boolean; series_selected: number };
   summary: {
     chapters: number; pages: number; bytes: number; series: number; volumes: number; chapters_without_volume: number;
-    groups: number; languages: number; active_days: number; per_active_day: number; avg_pages: number; avg_bytes: number;
+    new_chapters: number; backlog_chapters: number; groups: number; languages: number; active_days: number; per_active_day: number; avg_pages: number; avg_bytes: number;
     avg_page_bytes: number; redownloads: number; reuploads: number; refreshes: number; download_seconds: number;
     pages_per_minute: number | null; median_arrival_seconds: number | null; arrival_samples: number; series_added: number;
     scans: number; scan_failures: number; requests: number; new_releases_found: number; retries: number; cancelled: number;
@@ -43,7 +43,10 @@ interface Stats {
     library: { chapters: number; pages: number; bytes: number; volumes: number; tbd: number; moved_out: number; owned_elsewhere: number; skipped: number };
     queue: { active: number; pending: number; paused: number; failed: number };
   };
-  timeline: { t: string; chapters: number; pages: number; bytes: number; series_added: number; scans: number; requests: number; cumulative: number }[];
+  timeline: {
+    t: string; chapters: number; pages: number; bytes: number; series_added: number; scans: number; requests: number; cumulative: number;
+    new_chapters: number; backlog_chapters: number;
+  }[];
   heatmap: number[][];
   top_series: { id: string; title: string; cover_url: string | null; tier: number | null; chapters: number; pages: number; bytes: number; last_at: string }[];
   series_with_downloads: number;
@@ -65,6 +68,15 @@ interface Stats {
 }
 
 /* ------------------------------------------------------------------ helpers */
+
+// New releases = chapters downloaded within a few days of coming out (or published after the
+// title was added); backlog = older chapters (a newly added title's back catalogue, bulk imports).
+type Kind = "new" | "backlog" | "all";
+const KINDS: { value: Kind; label: string }[] = [
+  { value: "new", label: "New releases" },
+  { value: "backlog", label: "Backlog" },
+  { value: "all", label: "All" },
+];
 
 const TZ = (() => {
   try {
@@ -242,6 +254,8 @@ export default function StatsPage() {
   const preset = params.get("range") ?? (params.get("from") || params.get("to") ? "custom" : "all");
   const bucket = params.get("bucket") ?? "auto";
   const tagMatch = params.get("tag_match") === "all" ? "all" : "any";
+  const kindParam = params.get("kind");
+  const kind: Kind = kindParam === "backlog" || kindParam === "all" ? kindParam : "new";
 
   const update = (fn: (p: URLSearchParams) => void) => {
     const p = new URLSearchParams(params);
@@ -290,10 +304,11 @@ export default function StatsPage() {
       if (t) q.set("to", t);
     }
     q.set("bucket", bucket);
+    q.set("kind", kind);
     LIST_KEYS.forEach((k) => params.getAll(k).forEach((v) => q.append(k, v)));
     if (params.getAll("tag").length > 1) q.set("tag_match", tagMatch);
     return q.toString();
-  }, [params, preset, bucket, tagMatch]);
+  }, [params, preset, bucket, tagMatch, kind]);
 
   const { data: opts } = useQuery({
     queryKey: ["stats-options"],
@@ -344,7 +359,10 @@ export default function StatsPage() {
     long: tlLong(p.t),
     value: p[metric],
     line: cumulative && metric === "chapters" ? p.cumulative : undefined,
+    split: kind === "all" && metric === "chapters" ? p.new_chapters : undefined,
   }));
+  const kindHint = `New releases: chapters downloaded at most ${d.range.new_window_days} days after they came out on MangaDex, `
+    + "or published after the title was added. Backlog: older chapters (a new title's back catalogue, bulk imports).";
   // Click on a bar: narrow the period to it (a day shows just that day's activity).
   const zoom = (key: string) => {
     const start = parseDay(key);
@@ -413,6 +431,10 @@ export default function StatsPage() {
               max={isoDay(new Date())}
               onChange={(e) => setDates(preset === "custom" ? params.get("from") ?? "" : d.range.from, e.target.value)} />
           </div>
+          <span title={kindHint}>
+            <Seg label="Chapters" value={kind} onChange={(v) => update((p) => (v === "new" ? p.delete("kind") : p.set("kind", v)))}
+              items={KINDS} />
+          </span>
           <Seg label="Group by" value={bucket} onChange={(v) => update((p) => (v === "auto" ? p.delete("bucket") : p.set("bucket", v)))}
             items={[{ value: "auto", label: "Auto" }, { value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />
           <button type="button" className={`btn sm ${showFilters ? "dark" : ""}`} onClick={() => setShowFilters(!showFilters)} aria-expanded={showFilters}>
@@ -481,6 +503,10 @@ export default function StatsPage() {
         {fmtDay(d.range.from, { day: "numeric", month: "short", year: "numeric" })} – {fmtDay(d.range.to, { day: "numeric", month: "short", year: "numeric" })}
         {" · "}{d.range.days} day{d.range.days === 1 ? "" : "s"} · by {d.range.bucket}
         {d.filtered.titles && <> · {num(d.filtered.series_selected)} matching series</>}
+        {kind === "new" && s.backlog_chapters > 0 && (
+          <span title={kindHint}> · new releases only, {num(s.backlog_chapters)} backlog chapters not counted</span>
+        )}
+        {kind === "backlog" && <span title={kindHint}> · backlog only, {num(s.new_chapters)} new releases not counted</span>}
         {showDelta && <> · compared with {fmtDay(d.previous.from)} – {fmtDay(d.previous.to)}</>}
       </div>
 
@@ -507,7 +533,14 @@ export default function StatsPage() {
           )}
         </div>
       }>
-        <TimeChart points={points} format={fm} lineFormat={num} lineLabel="Total so far" onSelect={zoom} />
+        <TimeChart points={points} format={fm} lineFormat={num} lineLabel="Total so far" onSelect={zoom}
+          splitLabels={["New releases", "Backlog"]} />
+        {kind === "all" && metric === "chapters" && (
+          <div className="chart-legend" title={kindHint}>
+            <span><span className="sw" />New releases · {num(s.new_chapters)}</span>
+            <span><span className="sw alt" />Backlog · {num(s.backlog_chapters)}</span>
+          </div>
+        )}
       </Panel>
 
       <div className="panels">

@@ -34,6 +34,7 @@ export interface TimePoint {
   long: string; // tooltip title
   value: number;
   line?: number; // optional overlay (e.g. cumulative)
+  split?: number; // optional: part of value drawn as the lower segment, the rest drawn muted
 }
 
 function niceMax(v: number): number {
@@ -43,11 +44,12 @@ function niceMax(v: number): number {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
-export function TimeChart({ points, format, lineFormat, lineLabel, onSelect, height = 220 }: {
+export function TimeChart({ points, format, lineFormat, lineLabel, splitLabels, onSelect, height = 220 }: {
   points: TimePoint[];
   format: (n: number) => string;
   lineFormat?: (n: number) => string;
   lineLabel?: string;
+  splitLabels?: [string, string]; // tooltip labels for the split: [lower segment, rest]
   onSelect?: (key: string) => void;
   height?: number;
 }) {
@@ -91,6 +93,8 @@ export function TimeChart({ points, format, lineFormat, lineLabel, onSelect, hei
           {points.map((p, i) => {
             const x = pad.l + slot * i + (slot - bw) / 2;
             const h = Math.max(p.value > 0 ? 2 : 0, pad.t + ih - y(p.value));
+            const sv = p.split != null ? Math.min(p.split, p.value) : null;
+            const hs = sv != null ? Math.max(sv > 0 ? 2 : 0, pad.t + ih - y(sv)) : h;
             return (
               <g key={p.key}>
                 <rect
@@ -99,7 +103,11 @@ export function TimeChart({ points, format, lineFormat, lineLabel, onSelect, hei
                   onTouchStart={() => setHover(i)}
                   style={{ cursor: onSelect ? "zoom-in" : "default" }}
                 />
-                <rect x={x} y={pad.t + ih - h} width={bw} height={h} rx={Math.min(4, bw / 3)}
+                {sv != null && h > hs && (
+                  <rect x={x} y={pad.t + ih - h} width={bw} height={h} rx={Math.min(4, bw / 3)}
+                    className={`bar alt${hover === i ? " on" : ""}`} pointerEvents="none" />
+                )}
+                <rect x={x} y={pad.t + ih - hs} width={bw} height={hs} rx={Math.min(4, bw / 3)}
                   className={`bar${hover === i ? " on" : ""}`} pointerEvents="none" />
                 {i % every === 0 && (
                   <text x={pad.l + slot * i + slot / 2} y={height - 8} textAnchor="middle" className="axis">{p.label}</text>
@@ -120,6 +128,11 @@ export function TimeChart({ points, format, lineFormat, lineLabel, onSelect, hei
         >
           <strong>{hp.long}</strong>
           <span>{format(hp.value)}</span>
+          {hp.split != null && (
+            <span className="muted">
+              {splitLabels?.[0] ?? "Part"}: {format(hp.split)} · {splitLabels?.[1] ?? "Rest"}: {format(hp.value - hp.split)}
+            </span>
+          )}
           {hp.line != null && <span className="muted">{lineLabel}: {(lineFormat ?? format)(hp.line)}</span>}
           {onSelect && <span className="muted small">click to zoom</span>}
         </div>

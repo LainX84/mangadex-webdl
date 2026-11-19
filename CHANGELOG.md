@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.2 — 2026-11-19
+
+### Changed
+
+- **Statistics: new releases vs backlog.** Downloads are split into *new releases* (the chapter came out on MangaDex
+  at most 7 days before it was downloaded, or after the title was added) and *backlog* (older chapters: a newly added
+  title's back catalogue, a bulk import). The page shows new releases by default, so one big import no longer dwarfs
+  every other day on the chart or skews averages and records; a *New releases / Backlog / All* switch changes the
+  view, and *All* draws each bar in two colours.
+- API: `GET /api/stats` accepts `kind=all|new|backlog` (default `all`); the summary and every timeline bucket carry
+  `new_chapters` and `backlog_chapters`.
+
 ## 1.1.0 — 2026-11-17
 
 ### Added
